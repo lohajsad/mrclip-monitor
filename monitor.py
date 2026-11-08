@@ -88,6 +88,33 @@ def row_info(row):
     return creator, campaign, views, href
 
 
+def go_next(page, page_no):
+    """Click the next page. Tries a Next button/link, then the page number."""
+    nxt = page.locator("button, a").filter(
+        has_text=re.compile(r"^\s*(next|›|>|»|→)\s*$", re.I))
+    for i in range(nxt.count()):
+        el = nxt.nth(i)
+        try:
+            if (el.is_visible() and el.is_enabled()
+                    and el.get_attribute("disabled") is None
+                    and el.get_attribute("aria-disabled") != "true"):
+                el.click()
+                return True
+        except Exception:
+            pass
+    num = page.locator("button, a").filter(
+        has_text=re.compile(rf"^\s*{page_no + 1}\s*$"))
+    for i in range(num.count()):
+        el = num.nth(i)
+        try:
+            if el.is_visible() and el.is_enabled():
+                el.click()
+                return True
+        except Exception:
+            pass
+    return False
+
+
 with sync_playwright() as p:
     browser = p.chromium.launch(headless=True)
     ctx = browser.new_context(viewport={"width": 1280, "height": 900})
@@ -133,18 +160,31 @@ with sync_playwright() as p:
     found = []
     total_rows = 0
     pages_scanned = 0
+    seen = set()
     for page_no in range(1, 101):
+        rows = page.locator("table tbody tr").all()
+        sig = "|".join(r.inner_text()[:80] for r in rows)
+        if sig in seen:
+            break
+        seen.add(sig)
         pages_scanned = page_no
-        for row in page.locator("table tbody tr").all():
+        for row in rows:
             creator, campaign, views, href = row_info(row)
             total_rows += 1
             if views >= THRESHOLD:
                 found.append((page_no, creator, campaign, views, href))
-        nxt = page.get_by_role("button", name=re.compile("next", re.I))
-        if nxt.count() == 0 or not nxt.first.is_enabled():
+        if not go_next(page, page_no):
             break
-        nxt.first.click()
-        page.wait_for_timeout(2000)
+        page.wait_for_timeout(2500)
+
+    if pages_scanned == 1:
+        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        page.wait_for_timeout(1000)
+        page.screenshot(path="bottom.png")
+        labels = page.locator("button, a").all_inner_texts()
+        tail = " | ".join(t.strip() for t in labels if t.strip())[-700:]
+        tg_photo("bottom.png",
+                 "DEBUG: only 1 page was read. Buttons/links seen: " + tail)
 
     if found:
         found.sort(key=lambda x: x[3], reverse=True)
