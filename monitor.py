@@ -72,26 +72,27 @@ def load_cookies():
 
 
 def row_info(row):
-    cells = [c.strip() for c in row.locator("td").all_inner_texts()]
-    text = " ".join(cells)
+    """Returns None if the row is not a real pending clip."""
     link = row.locator("a[href*='tiktok.com']")
-    href = link.first.get_attribute("href") if link.count() else ""
-    m = re.search(r"(\d[\d.,]*\s*[kKmM]?)\s*views?", text, re.I)
-    if m:
-        views = parse_num(m.group(1))
-    else:
-        nums = [parse_num(c) for c in cells
-                if re.fullmatch(r"[\d.,]+\s*[kKmM]?", c)]
-        views = max(nums) if nums else 0
-    creator = cells[0] if cells else "?"
-    campaign = cells[1] if len(cells) > 1 else "?"
+    if link.count() == 0:
+        return None
+    text = row.inner_text()
+    if not re.search(r"\bpending\b", text, re.I):
+        return None
+    href = link.first.get_attribute("href") or ""
+    cells = [c.strip() for c in row.locator("td").all_inner_texts()]
+    nums = [parse_num(c) for c in cells
+            if re.fullmatch(r"[\d.,]+\s*[kKmM]?", c)]
+    views = max(nums) if nums else 0
+    creator = cells[0].split("\n")[0].strip() if cells else "?"
+    campaign = cells[1].replace("\n", " ").strip() if len(cells) > 1 else "?"
     return creator, campaign, views, href
 
 
-def go_next(page, page_no):
-    """Click the next page. Tries a Next button/link, then the page number."""
+def go_next(page):
+    """Click the NEXT button. Never touches APPROVE / DECLINE."""
     nxt = page.locator("button, a").filter(
-        has_text=re.compile(r"^\s*(next|›|>|»|→)\s*$", re.I))
+        has_text=re.compile(r"^\s*next\b", re.I))
     for i in range(nxt.count()):
         el = nxt.nth(i)
         try:
@@ -102,17 +103,18 @@ def go_next(page, page_no):
                 return True
         except Exception:
             pass
-    num = page.locator("button, a").filter(
-        has_text=re.compile(rf"^\s*{page_no + 1}\s*$"))
-    for i in range(num.count()):
-        el = num.nth(i)
-        try:
-            if el.is_visible() and el.is_enabled():
-                el.click()
-                return True
-        except Exception:
-            pass
     return False
+
+
+def read_page_indicator(page):
+    try:
+        txt = page.inner_text("body")
+        m = re.search(r"Page\s+(\d+)\s+of\s+(\d+)", txt, re.I)
+        if m:
+            return int(m.group(1)), int(m.group(2))
+    except Exception:
+        pass
+    return None, None
 
 
 with sync_playwright() as p:
@@ -153,12 +155,14 @@ with sync_playwright() as p:
 
     try:
         page.get_by_text(re.compile(r"^\s*pending\s*$", re.I)).first.click()
-        page.wait_for_timeout(2000)
+        page.wait_for_timeout(2500)
     except Exception:
         pass
 
+    _, site_pages = read_page_indicator(page)
+
     found = []
-    total_rows = 0
+    total_clips = 0
     pages_scanned = 0
     seen = set()
     for page_no in range(1, 101):
@@ -169,22 +173,25 @@ with sync_playwright() as p:
         seen.add(sig)
         pages_scanned = page_no
         for row in rows:
-            creator, campaign, views, href = row_info(row)
-            total_rows += 1
+            info = row_info(row)
+            if info is None:
+                continue
+            creator, campaign, views, href = info
+            total_clips += 1
             if views >= THRESHOLD:
                 found.append((page_no, creator, campaign, views, href))
-        if not go_next(page, page_no):
+        if not go_next(page):
             break
-        page.wait_for_timeout(2500)
+        page.wait_for_timeout(3000)
 
-    if pages_scanned == 1:
-        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        page.wait_for_timeout(1000)
-        page.screenshot(path="bottom.png")
-        labels = page.locator("button, a").all_inner_texts()
-        tail = " | ".join(t.strip() for t in labels if t.strip())[-700:]
-        tg_photo("bottom.png",
-                 "DEBUG: only 1 page was read. Buttons/links seen: " + tail)
+    pages_text = f"{pages_scanned} page{'s' if pages_scanned != 1 else ''}"
+    if site_pages:
+        pages_text = f"{pages_scanned} of {site_pages} pages"
+
+    if site_pages and pages_scanned < site_pages:
+        tg("⚠️ MRCLIP MONITOR WARNING\n\n"
+           f"The site has {site_pages} pages but only {pages_scanned} "
+           "were scanned this run. Some clips may have been missed.")
 
     if found:
         found.sort(key=lambda x: x[3], reverse=True)
@@ -194,8 +201,7 @@ with sync_playwright() as p:
             f"{n} pending clip{'s' if n != 1 else ''} "
             f"with {THRESHOLD:,}+ views {'are' if n != 1 else 'is'} "
             "waiting for approve / decline.\n"
-            f"(Checked {total_rows} pending clips on "
-            f"{pages_scanned} page{'s' if pages_scanned != 1 else ''})\n"
+            f"(Checked {total_clips} pending clips, {pages_text})\n"
         )
         blocks = []
         for i, (pg, cr, ca, v, h) in enumerate(found, 1):
@@ -213,8 +219,7 @@ with sync_playwright() as p:
         tg(
             "❌ NO CLIPS READY ❌\n\n"
             f"No pending clips have {THRESHOLD:,}+ views right now.\n"
-            f"(Checked {total_rows} pending clips on "
-            f"{pages_scanned} page{'s' if pages_scanned != 1 else ''})\n\n"
+            f"(Checked {total_clips} pending clips, {pages_text})\n\n"
             "Nothing to do. I'll check again soon."
         )
     else:
