@@ -17,6 +17,16 @@ def tg(text):
         )
 
 
+def tg_photo(path, caption):
+    with open(path, "rb") as f:
+        requests.post(
+            f"https://api.telegram.org/bot{TOKEN}/sendPhoto",
+            data={"chat_id": CHAT, "caption": caption[:1000]},
+            files={"photo": f},
+            timeout=60,
+        )
+
+
 def parse_num(s):
     s = s.strip().replace(" ", "")
     m = re.fullmatch(r"([\d.,]+)([kKmM]?)", s)
@@ -69,15 +79,17 @@ def row_info(row):
 
 with sync_playwright() as p:
     browser = p.chromium.launch(headless=True)
-    ctx = browser.new_context()
+    ctx = browser.new_context(viewport={"width": 1280, "height": 900})
     ctx.add_cookies(load_cookies())
     page = ctx.new_page()
     page.goto(URL, wait_until="networkidle", timeout=60000)
+    page.wait_for_timeout(5000)
 
     refresh = page.get_by_text(re.compile("refresh stats", re.I))
     if refresh.count() == 0:
-        tg("mrclip monitor: session expired. Please log in again, "
-           "export the cookies and update the MRCLIP_COOKIES secret.")
+        page.screenshot(path="debug.png")
+        tg_photo("debug.png",
+                 "Could not find REFRESH STATS. URL: " + page.url)
         browser.close()
         sys.exit(1)
 
@@ -117,4 +129,8 @@ with sync_playwright() as p:
         tg("\n".join(lines))
     else:
         print("No actionable clips.")
+        page.screenshot(path="debug.png")
+        tg_photo("debug.png",
+                 "Test run finished: no clips found with 1,000+ views. "
+                 "This is what the bot saw.")
     browser.close()
