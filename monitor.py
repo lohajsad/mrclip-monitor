@@ -5,16 +5,27 @@ TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHAT = os.environ["TELEGRAM_CHAT_ID"]
 URL = "https://mrclip.gr/admin/submissions"
 THRESHOLD = 1000
+SEND_WHEN_EMPTY = True  # True = also send a message when nothing qualifies
 
 
 def tg(text):
-    for i in range(0, len(text), 3900):
-        requests.post(
-            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-            data={"chat_id": CHAT, "text": text[i:i + 3900],
-                  "disable_web_page_preview": True},
-            timeout=30,
-        )
+    requests.post(
+        f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+        data={"chat_id": CHAT, "text": text,
+              "disable_web_page_preview": True},
+        timeout=30,
+    )
+
+
+def tg_blocks(header, blocks):
+    msg = header
+    for b in blocks:
+        if len(msg) + len(b) > 3800:
+            tg(msg)
+            msg = ""
+        msg += b
+    if msg.strip():
+        tg(msg)
 
 
 def tg_photo(path, caption):
@@ -88,8 +99,16 @@ with sync_playwright() as p:
     refresh = page.get_by_text(re.compile("refresh stats", re.I))
     if refresh.count() == 0:
         page.screenshot(path="debug.png")
-        tg_photo("debug.png",
-                 "Could not find REFRESH STATS. URL: " + page.url)
+        tg_photo(
+            "debug.png",
+            "⚠️ MRCLIP MONITOR PROBLEM\n\n"
+            "Could not find the REFRESH STATS button. Your login session "
+            "has probably expired.\n\n"
+            "Fix: log in to mrclip.gr in Firefox, export the cookies "
+            "(Cookie-Editor → Export → JSON) and update the "
+            "MRCLIP_COOKIES secret in GitHub.\n\n"
+            "URL seen: " + page.url,
+        )
         browser.close()
         sys.exit(1)
 
@@ -102,7 +121,8 @@ with sync_playwright() as p:
     try:
         modal.wait_for(state="hidden", timeout=900000)
     except Exception:
-        tg("mrclip monitor: stats refresh took too long this run.")
+        tg("⚠️ MRCLIP MONITOR\n\nThe stats refresh took too long this run. "
+           "Results below may be slightly outdated.")
 
     try:
         page.get_by_text(re.compile(r"^\s*pending\s*$", re.I)).first.click()
@@ -111,9 +131,13 @@ with sync_playwright() as p:
         pass
 
     found = []
+    total_rows = 0
+    pages_scanned = 0
     for page_no in range(1, 101):
+        pages_scanned = page_no
         for row in page.locator("table tbody tr").all():
             creator, campaign, views, href = row_info(row)
+            total_rows += 1
             if views >= THRESHOLD:
                 found.append((page_no, creator, campaign, views, href))
         nxt = page.get_by_role("button", name=re.compile("next", re.I))
@@ -123,14 +147,36 @@ with sync_playwright() as p:
         page.wait_for_timeout(2000)
 
     if found:
-        lines = ["Clips ready to review (1,000+ views):\n"]
-        for pg, cr, ca, v, h in found:
-            lines.append(f"Page {pg} | {cr} | {ca} | {v:,} views\n{h}\n")
-        tg("\n".join(lines))
+        found.sort(key=lambda x: x[3], reverse=True)
+        n = len(found)
+        header = (
+            "✅✅✅ CLIPS READY TO REVIEW ✅✅✅\n\n"
+            f"{n} pending clip{'s' if n != 1 else ''} "
+            f"with {THRESHOLD:,}+ views {'are' if n != 1 else 'is'} "
+            "waiting for approve / decline.\n"
+            f"(Checked {total_rows} pending clips on "
+            f"{pages_scanned} page{'s' if pages_scanned != 1 else ''})\n"
+        )
+        blocks = []
+        for i, (pg, cr, ca, v, h) in enumerate(found, 1):
+            blocks.append(
+                "\n━━━━━━━━━━━━━━\n"
+                f"✅ Clip {i} of {n}\n"
+                f"📄 Page: {pg}\n"
+                f"👤 Creator: {cr}\n"
+                f"🎯 Campaign: {ca}\n"
+                f"👁 Views: {v:,}\n"
+                f"🔗 {h}\n"
+            )
+        tg_blocks(header, blocks)
+    elif SEND_WHEN_EMPTY:
+        tg(
+            "❌ NO CLIPS READY ❌\n\n"
+            f"No pending clips have {THRESHOLD:,}+ views right now.\n"
+            f"(Checked {total_rows} pending clips on "
+            f"{pages_scanned} page{'s' if pages_scanned != 1 else ''})\n\n"
+            "Nothing to do. I'll check again soon."
+        )
     else:
         print("No actionable clips.")
-        page.screenshot(path="debug.png")
-        tg_photo("debug.png",
-                 "Test run finished: no clips found with 1,000+ views. "
-                 "This is what the bot saw.")
     browser.close()
