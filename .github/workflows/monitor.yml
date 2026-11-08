@@ -1,8 +1,11 @@
 name: mrclip-monitor
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "7,37 * * * *"
   workflow_dispatch:
+concurrency:
+  group: mrclip
+  cancel-in-progress: false
 jobs:
   check:
     runs-on: ubuntu-latest
