@@ -3,7 +3,7 @@ from playwright.sync_api import sync_playwright
 
 TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHAT = os.environ["TELEGRAM_CHAT_ID"]
-URL = "https://mrclip.gr/submissions"
+URL = "https://mrclip.gr/admin/submissions"
 THRESHOLD = 1000
 
 
